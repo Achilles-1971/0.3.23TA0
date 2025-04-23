@@ -1,0 +1,62 @@
+from sqlalchemy import create_engine, Column, Integer, String, Numeric, ForeignKey, Date
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
+import os
+from dotenv import load_dotenv
+
+# ✅ Загрузка переменных окружения из .env
+load_dotenv()
+
+# ✅ Получение строки подключения без кавычек
+DATABASE_URL = os.getenv("DATABASE_URL")
+if not DATABASE_URL:
+    raise ValueError("DATABASE_URL is not set")
+
+# ✅ Подключение к базе
+engine = create_engine(DATABASE_URL)
+SessionLocal = sessionmaker(bind=engine)
+Base = declarative_base()
+
+# Модели
+class User(Base):
+    __tablename__ = "users"
+    id = Column(Integer, primary_key=True)
+    username = Column(String, unique=True, index=True)
+    hashed_password = Column(String)
+
+class Enterprise(Base):
+    __tablename__ = "enterprises"
+    id = Column(Integer, primary_key=True)
+    name = Column(String)
+    requisites = Column(String)
+    phone = Column(String)
+    contact_person = Column(String)
+
+class Indicator(Base):
+    __tablename__ = "indicators"
+    id = Column(Integer, primary_key=True)
+    name = Column(String)
+    importance = Column(Numeric)
+    unit = Column(String)
+
+class Currency(Base):
+    __tablename__ = "currencies"
+    code = Column(String, primary_key=True)
+    name = Column(String)
+
+class ExchangeRate(Base):
+    __tablename__ = "exchange_rates"
+    id = Column(Integer, primary_key=True)
+    from_currency = Column(String, ForeignKey("currencies.code"))
+    to_currency = Column(String, ForeignKey("currencies.code"))
+    rate = Column(Numeric)
+    rate_date = Column(Date)
+
+class IndicatorValue(Base):
+    __tablename__ = "indicator_values"
+    id = Column(Integer, primary_key=True)
+    enterprise_id = Column(Integer, ForeignKey("enterprises.id"))
+    indicator_id = Column(Integer, ForeignKey("indicators.id"))
+    value_date = Column(Date)
+    value = Column(Numeric)
+    currency_code = Column(String, ForeignKey("currencies.code"))
