@@ -11,7 +11,7 @@ from sqlalchemy.sql import func
 
 router = APIRouter()
 
-@router.post("/register", response_model=schemas.Token, tags=["auth"], summary="Register a new user")
+@router.post("/register", response_model=schemas.TokenPair, tags=["auth"], summary="Register a new user")
 def register_user(user: schemas.UserCreateSchema, db: Session = Depends(get_db)):
     existing_user = db.query(models.User).filter(models.User.username == user.username).first()
     if existing_user:
@@ -24,9 +24,16 @@ def register_user(user: schemas.UserCreateSchema, db: Session = Depends(get_db))
     access_token = create_access_token(
         data={"sub": str(db_user.id)}, expires_delta=access_token_expires
     )
-    return {"access_token": access_token, "token_type": "bearer"}
+    from dependencies import create_refresh_token
+    refresh_token = create_refresh_token(data={"sub": str(user.id)})
+    return {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "token_type": "bearer"
+    }
 
-@router.post("/token", response_model=schemas.Token, tags=["auth"], summary="Login and get access token")
+
+@router.post("/token", response_model=schemas.TokenPair, tags=["auth"], summary="Login and get access token")
 def login_for_access_token(
     form_data: OAuth2PasswordRequestForm = Depends(), 
     db: Session = Depends(get_db)
@@ -55,7 +62,22 @@ def login_for_access_token(
     access_token = create_access_token(
         data={"sub": str(user.id)}, expires_delta=access_token_expires
     )
-    return {"access_token": access_token, "token_type": "bearer"}
+    from dependencies import create_refresh_token
+    refresh_token = create_refresh_token(data={"sub": str(user.id)})
+    return {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "token_type": "bearer"
+    }
+
+
+@router.post("/refresh", response_model=schemas.TokenPair, tags=["auth"], summary="Refresh access token")
+def refresh_access_token(refresh_token: str = Query(...), db: Session = Depends(get_db)):
+    from dependencies import verify_refresh_token, create_access_token
+    user_id = verify_refresh_token(refresh_token)
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    new_access_token = create_access_token(data={"sub": str(user_id)}, expires_delta=access_token_expires)
+    return {"access_token": new_access_token, "token_type": "bearer"}
 
 # -----------------------------------
 # Маршруты для предприятий

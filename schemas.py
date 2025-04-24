@@ -36,7 +36,7 @@ class IndicatorSchema(BaseModel):
 
 class IndicatorCreateSchema(BaseModel):
     name: str
-    importance: float = Field(..., gt=0, le=1)  # Важность от 0 до 1
+    importance: float = Field(..., gt=0, le=1)
     unit: str
 
     class Config:
@@ -143,10 +143,27 @@ class WeightedIndicatorGroupSchema(BaseModel):
     class Config:
         extra = "forbid"
 
-# Схема для токена
+# Схема для токена (одиночный access token)
 class Token(BaseModel):
     access_token: str
     token_type: str
+
+    class Config:
+        extra = "forbid"
+
+# Схема для пары access + refresh токенов
+class TokenPair(BaseModel):
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+
+    class Config:
+        extra = "forbid"
+
+# Схема для обновления токена
+class TokenRefreshResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
 
     class Config:
         extra = "forbid"
