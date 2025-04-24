@@ -12,12 +12,16 @@ class EnterpriseSchema(BaseModel):
 
     class Config:
         from_attributes = True
+        extra = "forbid"
 
 class EnterpriseCreateSchema(BaseModel):
     name: str
     requisites: str
     phone: str
     contact_person: str
+
+    class Config:
+        extra = "forbid"
 
 # Схема для показателя
 class IndicatorSchema(BaseModel):
@@ -28,11 +32,15 @@ class IndicatorSchema(BaseModel):
 
     class Config:
         from_attributes = True
+        extra = "forbid"
 
 class IndicatorCreateSchema(BaseModel):
     name: str
     importance: float = Field(..., gt=0, le=1)  # Важность от 0 до 1
     unit: str
+
+    class Config:
+        extra = "forbid"
 
 # Схема для валюты
 class CurrencySchema(BaseModel):
@@ -41,10 +49,14 @@ class CurrencySchema(BaseModel):
 
     class Config:
         from_attributes = True
+        extra = "forbid"
 
 class CurrencyCreateSchema(BaseModel):
     code: str
     name: str
+
+    class Config:
+        extra = "forbid"
 
 # Схема для курса валют
 class ExchangeRateSchema(BaseModel):
@@ -56,12 +68,16 @@ class ExchangeRateSchema(BaseModel):
 
     class Config:
         from_attributes = True
+        extra = "forbid"
 
 class ExchangeRateCreateSchema(BaseModel):
     from_currency: str
     to_currency: str
-    rate: float = Field(..., gt=0)  # Курс должен быть положительным
+    rate: float = Field(..., gt=0)
     rate_date: date
+
+    class Config:
+        extra = "forbid"
 
     @validator("to_currency")
     def currencies_must_differ(cls, v, values):
@@ -82,6 +98,7 @@ class IndicatorValueSchema(BaseModel):
 
     class Config:
         from_attributes = True
+        extra = "forbid"
 
 class IndicatorValueCreateSchema(BaseModel):
     enterprise_id: int
@@ -89,6 +106,9 @@ class IndicatorValueCreateSchema(BaseModel):
     value_date: date
     value: float
     currency_code: str
+
+    class Config:
+        extra = "forbid"
 
 # Схема для взвешенного показателя
 class WeightedIndicatorSchema(BaseModel):
@@ -104,19 +124,37 @@ class WeightedIndicatorSchema(BaseModel):
 
     class Config:
         from_attributes = True
+        extra = "forbid"
 
 # Схема для агрегации взвешенных показателей
 class WeightedIndicatorAggregateSchema(BaseModel):
     total_weighted_value: Optional[float] = None
     warning: Optional[str] = None
 
+    class Config:
+        extra = "forbid"
+
 # Схема для группировки взвешенных показателей по периодам
 class WeightedIndicatorGroupSchema(BaseModel):
-    period: str  # Например, "2025-04" для месяца или "2025-Q2" для квартала
+    period: str
     total_weighted_value: Optional[float] = None
     warning: Optional[str] = None
+
+    class Config:
+        extra = "forbid"
 
 # Схема для токена
 class Token(BaseModel):
     access_token: str
     token_type: str
+
+    class Config:
+        extra = "forbid"
+
+# Схема для регистрации пользователя
+class UserCreateSchema(BaseModel):
+    username: str
+    password: str = Field(..., min_length=8)
+
+    class Config:
+        extra = "forbid"

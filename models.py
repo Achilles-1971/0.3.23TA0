@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, Column, Integer, String, Numeric, ForeignKey, Date
+from sqlalchemy import create_engine, Column, Integer, String, Numeric, ForeignKey, Date, Index, UniqueConstraint
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 import os
@@ -52,6 +52,10 @@ class ExchangeRate(Base):
     rate = Column(Numeric)
     rate_date = Column(Date)
 
+    __table_args__ = (
+        UniqueConstraint("from_currency", "to_currency", "rate_date", name="uix_exchange_rate_date"),
+    )
+
 class IndicatorValue(Base):
     __tablename__ = "indicator_values"
     id = Column(Integer, primary_key=True)
@@ -60,3 +64,9 @@ class IndicatorValue(Base):
     value_date = Column(Date)
     value = Column(Numeric)
     currency_code = Column(String, ForeignKey("currencies.code"))
+
+    __table_args__ = (
+        Index("ix_value_date", "value_date"),
+        Index("ix_enterprise_id", "enterprise_id"),
+        Index("ix_indicator_id", "indicator_id"),
+    )

@@ -1,53 +1,48 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from typing import List, Dict
 from datetime import timedelta, date
 from passlib.exc import UnknownHashError
-from models import User, Enterprise, Indicator, Currency, ExchangeRate, IndicatorValue
-from schemas import (
-    Token, EnterpriseSchema, EnterpriseCreateSchema, IndicatorSchema, IndicatorCreateSchema,
-    CurrencySchema, CurrencyCreateSchema, ExchangeRateSchema, ExchangeRateCreateSchema,
-    IndicatorValueSchema, IndicatorValueCreateSchema, WeightedIndicatorSchema, 
-    WeightedIndicatorAggregateSchema, WeightedIndicatorGroupSchema
-)
+import models
+import schemas
 from dependencies import get_db, get_current_user, create_access_token, ACCESS_TOKEN_EXPIRE_MINUTES, pwd_context
-from sqlalchemy.sql import func  # Импорт func для группировки
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
-from . import models, schemas  # <-- вот это ключевое
-from .dependencies import get_db
+from sqlalchemy.sql import func
 
 router = APIRouter()
 
-@router.post("/register", response_model=Token, tags=["auth"], summary="Register a new user")
-def register_user(username: str, password: str, db: Session = Depends(get_db)):
-    existing_user = db.query(User).filter(User.username == username).first()
+@router.post("/register", response_model=schemas.Token, tags=["auth"], summary="Register a new user")
+def register_user(user: schemas.UserCreateSchema, db: Session = Depends(get_db)):
+    existing_user = db.query(models.User).filter(models.User.username == user.username).first()
     if existing_user:
         raise HTTPException(status_code=400, detail="Username already exists")
-    hashed_password = pwd_context.hash(password)
-    db_user = User(username=username, hashed_password=hashed_password)
+    hashed_password = pwd_context.hash(user.password)
+    db_user = models.User(username=user.username, hashed_password=hashed_password)
     db.add(db_user)
     db.commit()
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
-        data={"sub": username}, expires_delta=access_token_expires
+        data={"sub": str(db_user.id)}, expires_delta=access_token_expires
     )
     return {"access_token": access_token, "token_type": "bearer"}
 
-@router.post("/token", response_model=Token, tags=["auth"], summary="Login and get access token")
-def login_for_access_token(username: str, password: str, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.username == username).first()
+@router.post("/token", response_model=schemas.Token, tags=["auth"], summary="Login and get access token")
+def login_for_access_token(
+    form_data: OAuth2PasswordRequestForm = Depends(), 
+    db: Session = Depends(get_db)
+):
+    user = db.query(models.User).filter(models.User.username == form_data.username).first()
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect username or password",
+            detail="Username does not exist",
             headers={"WWW-Authenticate": "Bearer"},
         )
     try:
-        if not pwd_context.verify(password, user.hashed_password):
+        if not pwd_context.verify(form_data.password, user.hashed_password):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Incorrect username or password",
+                detail="Incorrect password",
                 headers={"WWW-Authenticate": "Bearer"},
             )
     except UnknownHashError:
@@ -58,7 +53,7 @@ def login_for_access_token(username: str, password: str, db: Session = Depends(g
         )
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
-        data={"sub": user.username}, expires_delta=access_token_expires
+        data={"sub": str(user.id)}, expires_delta=access_token_expires
     )
     return {"access_token": access_token, "token_type": "bearer"}
 
@@ -66,21 +61,21 @@ def login_for_access_token(username: str, password: str, db: Session = Depends(g
 # Маршруты для предприятий
 # -----------------------------------
 
-@router.get("/enterprises/", response_model=List[EnterpriseSchema], tags=["enterprises"], summary="Get all enterprises")
+@router.get("/enterprises/", response_model=List[schemas.EnterpriseSchema], tags=["enterprises"], summary="Get all enterprises")
 def get_enterprises(db: Session = Depends(get_db), current_user=Depends(get_current_user)):
-    return db.query(Enterprise).all()
+    return db.query(models.Enterprise).all()
 
-@router.post("/enterprises/", response_model=EnterpriseSchema, tags=["enterprises"], summary="Create a new enterprise")
-def create_enterprise(enterprise: EnterpriseCreateSchema, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
-    db_enterprise = Enterprise(**enterprise.dict())
+@router.post("/enterprises/", response_model=schemas.EnterpriseSchema, tags=["enterprises"], summary="Create a new enterprise")
+def create_enterprise(enterprise: schemas.EnterpriseCreateSchema, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    db_enterprise = models.Enterprise(**enterprise.dict())
     db.add(db_enterprise)
     db.commit()
     db.refresh(db_enterprise)
     return db_enterprise
 
-@router.put("/enterprises/{id}", response_model=EnterpriseSchema, tags=["enterprises"], summary="Update an enterprise")
-def update_enterprise(id: int, enterprise: EnterpriseCreateSchema, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
-    db_enterprise = db.query(Enterprise).filter(Enterprise.id == id).first()
+@router.put("/enterprises/{id}", response_model=schemas.EnterpriseSchema, tags=["enterprises"], summary="Update an enterprise")
+def update_enterprise(id: int, enterprise: schemas.EnterpriseCreateSchema, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    db_enterprise = db.query(models.Enterprise).filter(models.Enterprise.id == id).first()
     if not db_enterprise:
         raise HTTPException(status_code=404, detail="Enterprise not found")
     for key, value in enterprise.dict().items():
@@ -91,7 +86,7 @@ def update_enterprise(id: int, enterprise: EnterpriseCreateSchema, db: Session =
 
 @router.delete("/enterprises/{id}", tags=["enterprises"], summary="Delete an enterprise")
 def delete_enterprise(id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
-    db_enterprise = db.query(Enterprise).filter(Enterprise.id == id).first()
+    db_enterprise = db.query(models.Enterprise).filter(models.Enterprise.id == id).first()
     if not db_enterprise:
         raise HTTPException(status_code=404, detail="Enterprise not found")
     db.delete(db_enterprise)
@@ -102,21 +97,21 @@ def delete_enterprise(id: int, db: Session = Depends(get_db), current_user=Depen
 # Маршруты для показателей
 # -----------------------------------
 
-@router.get("/indicators/", response_model=List[IndicatorSchema], tags=["indicators"], summary="Get all indicators")
+@router.get("/indicators/", response_model=List[schemas.IndicatorSchema], tags=["indicators"], summary="Get all indicators")
 def get_indicators(db: Session = Depends(get_db), current_user=Depends(get_current_user)):
-    return db.query(Indicator).all()
+    return db.query(models.Indicator).all()
 
-@router.post("/indicators/", response_model=IndicatorSchema, tags=["indicators"], summary="Create a new indicator")
-def create_indicator(indicator: IndicatorCreateSchema, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
-    db_indicator = Indicator(**indicator.dict())
+@router.post("/indicators/", response_model=schemas.IndicatorSchema, tags=["indicators"], summary="Create a new indicator")
+def create_indicator(indicator: schemas.IndicatorCreateSchema, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    db_indicator = models.Indicator(**indicator.dict())
     db.add(db_indicator)
     db.commit()
     db.refresh(db_indicator)
     return db_indicator
 
-@router.put("/indicators/{id}", response_model=IndicatorSchema, tags=["indicators"], summary="Update an indicator")
-def update_indicator(id: int, indicator: IndicatorCreateSchema, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
-    db_indicator = db.query(Indicator).filter(Indicator.id == id).first()
+@router.put("/indicators/{id}", response_model=schemas.IndicatorSchema, tags=["indicators"], summary="Update an indicator")
+def update_indicator(id: int, indicator: schemas.IndicatorCreateSchema, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    db_indicator = db.query(models.Indicator).filter(models.Indicator.id == id).first()
     if not db_indicator:
         raise HTTPException(status_code=404, detail="Indicator not found")
     for key, value in indicator.dict().items():
@@ -127,7 +122,7 @@ def update_indicator(id: int, indicator: IndicatorCreateSchema, db: Session = De
 
 @router.delete("/indicators/{id}", tags=["indicators"], summary="Delete an indicator")
 def delete_indicator(id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
-    db_indicator = db.query(Indicator).filter(Indicator.id == id).first()
+    db_indicator = db.query(models.Indicator).filter(models.Indicator.id == id).first()
     if not db_indicator:
         raise HTTPException(status_code=404, detail="Indicator not found")
     db.delete(db_indicator)
@@ -138,21 +133,21 @@ def delete_indicator(id: int, db: Session = Depends(get_db), current_user=Depend
 # Маршруты для валют
 # -----------------------------------
 
-@router.get("/currencies/", response_model=List[CurrencySchema], tags=["currencies"], summary="Get all currencies")
+@router.get("/currencies/", response_model=List[schemas.CurrencySchema], tags=["currencies"], summary="Get all currencies")
 def get_currencies(db: Session = Depends(get_db), current_user=Depends(get_current_user)):
-    return db.query(Currency).all()
+    return db.query(models.Currency).all()
 
-@router.post("/currencies/", response_model=CurrencySchema, tags=["currencies"], summary="Create a new currency")
-def create_currency(currency: CurrencyCreateSchema, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
-    db_currency = Currency(**currency.dict())
+@router.post("/currencies/", response_model=schemas.CurrencySchema, tags=["currencies"], summary="Create a new currency")
+def create_currency(currency: schemas.CurrencyCreateSchema, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    db_currency = models.Currency(**currency.dict())
     db.add(db_currency)
     db.commit()
     db.refresh(db_currency)
     return db_currency
 
-@router.put("/currencies/{code}", response_model=CurrencySchema, tags=["currencies"], summary="Update a currency")
-def update_currency(code: str, currency: CurrencyCreateSchema, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
-    db_currency = db.query(Currency).filter(Currency.code == code).first()
+@router.put("/currencies/{code}", response_model=schemas.CurrencySchema, tags=["currencies"], summary="Update a currency")
+def update_currency(code: str, currency: schemas.CurrencyCreateSchema, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    db_currency = db.query(models.Currency).filter(models.Currency.code == code).first()
     if not db_currency:
         raise HTTPException(status_code=404, detail="Currency not found")
     for key, value in currency.dict().items():
@@ -163,7 +158,7 @@ def update_currency(code: str, currency: CurrencyCreateSchema, db: Session = Dep
 
 @router.delete("/currencies/{code}", tags=["currencies"], summary="Delete a currency")
 def delete_currency(code: str, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
-    db_currency = db.query(Currency).filter(Currency.code == code).first()
+    db_currency = db.query(models.Currency).filter(models.Currency.code == code).first()
     if not db_currency:
         raise HTTPException(status_code=404, detail="Currency not found")
     db.delete(db_currency)
@@ -174,21 +169,21 @@ def delete_currency(code: str, db: Session = Depends(get_db), current_user=Depen
 # Маршруты для курсов валют
 # -----------------------------------
 
-@router.get("/exchange-rates/", response_model=List[ExchangeRateSchema], tags=["exchange_rates"], summary="Get all exchange rates")
+@router.get("/exchange-rates/", response_model=List[schemas.ExchangeRateSchema], tags=["exchange_rates"], summary="Get all exchange rates")
 def get_exchange_rates(db: Session = Depends(get_db), current_user=Depends(get_current_user)):
-    return db.query(ExchangeRate).all()
+    return db.query(models.ExchangeRate).all()
 
-@router.post("/exchange-rates/", response_model=ExchangeRateSchema, tags=["exchange_rates"], summary="Create a new exchange rate")
-def create_exchange_rate(exchange_rate: ExchangeRateCreateSchema, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
-    db_exchange_rate = ExchangeRate(**exchange_rate.dict())
+@router.post("/exchange-rates/", response_model=schemas.ExchangeRateSchema, tags=["exchange_rates"], summary="Create a new exchange rate")
+def create_exchange_rate(exchange_rate: schemas.ExchangeRateCreateSchema, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    db_exchange_rate = models.ExchangeRate(**exchange_rate.dict())
     db.add(db_exchange_rate)
     db.commit()
     db.refresh(db_exchange_rate)
     return db_exchange_rate
 
-@router.put("/exchange-rates/{id}", response_model=ExchangeRateSchema, tags=["exchange_rates"], summary="Update an exchange rate")
-def update_exchange_rate(id: int, exchange_rate: ExchangeRateCreateSchema, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
-    db_exchange_rate = db.query(ExchangeRate).filter(ExchangeRate.id == id).first()
+@router.put("/exchange-rates/{id}", response_model=schemas.ExchangeRateSchema, tags=["exchange_rates"], summary="Update an exchange rate")
+def update_exchange_rate(id: int, exchange_rate: schemas.ExchangeRateCreateSchema, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    db_exchange_rate = db.query(models.ExchangeRate).filter(models.ExchangeRate.id == id).first()
     if not db_exchange_rate:
         raise HTTPException(status_code=404, detail="Exchange rate not found")
     for key, value in exchange_rate.dict().items():
@@ -199,7 +194,7 @@ def update_exchange_rate(id: int, exchange_rate: ExchangeRateCreateSchema, db: S
 
 @router.delete("/exchange-rates/{id}", tags=["exchange_rates"], summary="Delete an exchange rate")
 def delete_exchange_rate(id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
-    db_exchange_rate = db.query(ExchangeRate).filter(ExchangeRate.id == id).first()
+    db_exchange_rate = db.query(models.ExchangeRate).filter(models.ExchangeRate.id == id).first()
     if not db_exchange_rate:
         raise HTTPException(status_code=404, detail="Exchange rate not found")
     db.delete(db_exchange_rate)
@@ -210,7 +205,7 @@ def delete_exchange_rate(id: int, db: Session = Depends(get_db), current_user=De
 # Маршруты для значений показателей
 # -----------------------------------
 
-@router.get("/indicator-values/", response_model=List[IndicatorValueSchema], tags=["indicator_values"], summary="Get indicator values with optional filters")
+@router.get("/indicator-values/", response_model=List[schemas.IndicatorValueSchema], tags=["indicator_values"], summary="Get indicator values with optional filters")
 def get_indicator_values(
     enterprise_id: int = Query(None),
     indicator_id: int = Query(None),
@@ -223,15 +218,15 @@ def get_indicator_values(
     current_user=Depends(get_current_user)
 ):
     # Фильтрация значений показателей
-    query = db.query(IndicatorValue)
+    query = db.query(models.IndicatorValue)
     if enterprise_id:
-        query = query.filter(IndicatorValue.enterprise_id == enterprise_id)
+        query = query.filter(models.IndicatorValue.enterprise_id == enterprise_id)
     if indicator_id:
-        query = query.filter(IndicatorValue.indicator_id == indicator_id)
+        query = query.filter(models.IndicatorValue.indicator_id == indicator_id)
     if from_date:
-        query = query.filter(IndicatorValue.value_date >= from_date)
+        query = query.filter(models.IndicatorValue.value_date >= from_date)
     if to_date:
-        query = query.filter(IndicatorValue.value_date <= to_date)
+        query = query.filter(models.IndicatorValue.value_date <= to_date)
     
     # Пагинация
     query = query.offset(skip).limit(limit)
@@ -242,10 +237,10 @@ def get_indicator_values(
     currencies = {item.currency_code for item in indicator_values}
 
     # Загружаем все курсы одним запросом
-    exchange_rates = db.query(ExchangeRate).filter(
-        ExchangeRate.from_currency.in_(currencies),
-        ExchangeRate.to_currency == target_currency,
-        ExchangeRate.rate_date.in_(dates)
+    exchange_rates = db.query(models.ExchangeRate).filter(
+        models.ExchangeRate.from_currency.in_(currencies),
+        models.ExchangeRate.to_currency == target_currency,
+        models.ExchangeRate.rate_date.in_(dates)
     ).all()
 
     # Словарь курсов для быстрого доступа
@@ -256,7 +251,7 @@ def get_indicator_values(
     # Формируем ответ с конвертацией и предупреждениями
     result = []
     for item in indicator_values:
-        item_dict = IndicatorValueSchema.from_orm(item).dict()
+        item_dict = schemas.IndicatorValueSchema.from_orm(item).dict()
         if item.currency_code == target_currency:
             item_dict["converted_value"] = float(item.value)
             item_dict["warning"] = None
@@ -272,8 +267,18 @@ def get_indicator_values(
 
     return result
 
-@router.post("/indicator-values/", response_model=schemas.IndicatorValue, status_code=201, summary="Создать значение показателя", description="Создаёт новое значение показателя для заданного предприятия с возможной конвертацией валют.")
-def create_indicator_value(indicator_value: schemas.IndicatorValueCreate, db: Session = Depends(get_db)):
+@router.post(
+    "/indicator-values/", 
+    response_model=schemas.IndicatorValueSchema, 
+    status_code=201, 
+    summary="Создать значение показателя", 
+    description="Создаёт новое значение показателя для заданного предприятия с возможной конвертацией валют."
+)
+def create_indicator_value(
+    indicator_value: schemas.IndicatorValueCreateSchema,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
     # Проверка существования предприятия, показателя и валюты
     enterprise = db.query(models.Enterprise).get(indicator_value.enterprise_id)
     if not enterprise:
@@ -293,10 +298,9 @@ def create_indicator_value(indicator_value: schemas.IndicatorValueCreate, db: Se
     db.refresh(db_value)
     return db_value
 
-
-@router.put("/indicator-values/{id}", response_model=IndicatorValueSchema, tags=["indicator_values"], summary="Update an indicator value")
-def update_indicator_value(id: int, indicator_value: IndicatorValueCreateSchema, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
-    db_indicator_value = db.query(IndicatorValue).filter(IndicatorValue.id == id).first()
+@router.put("/indicator-values/{id}", response_model=schemas.IndicatorValueSchema, tags=["indicator_values"], summary="Update an indicator value")
+def update_indicator_value(id: int, indicator_value: schemas.IndicatorValueCreateSchema, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    db_indicator_value = db.query(models.IndicatorValue).filter(models.IndicatorValue.id == id).first()
     if not db_indicator_value:
         raise HTTPException(status_code=404, detail="Indicator value not found")
     for key, value in indicator_value.dict().items():
@@ -307,7 +311,7 @@ def update_indicator_value(id: int, indicator_value: IndicatorValueCreateSchema,
 
 @router.delete("/indicator-values/{id}", tags=["indicator_values"], summary="Delete an indicator value")
 def delete_indicator_value(id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
-    db_indicator_value = db.query(IndicatorValue).filter(IndicatorValue.id == id).first()
+    db_indicator_value = db.query(models.IndicatorValue).filter(models.IndicatorValue.id == id).first()
     if not db_indicator_value:
         raise HTTPException(status_code=404, detail="Indicator value not found")
     db.delete(db_indicator_value)
@@ -319,7 +323,7 @@ def delete_indicator_value(id: int, db: Session = Depends(get_db), current_user=
 # -----------------------------------
 
 @router.get("/weighted-indicators/", 
-            response_model=List[WeightedIndicatorSchema] | WeightedIndicatorAggregateSchema | List[WeightedIndicatorGroupSchema], 
+            response_model=List[schemas.WeightedIndicatorSchema] | schemas.WeightedIndicatorAggregateSchema | List[schemas.WeightedIndicatorGroupSchema], 
             tags=["weighted_indicators"], 
             summary="Get weighted indicators, their aggregate, or grouped by period")
 def get_weighted_indicators(
@@ -336,16 +340,16 @@ def get_weighted_indicators(
     current_user=Depends(get_current_user)
 ):
     # Запрос с JOIN для получения имени и важности показателя
-    query = db.query(IndicatorValue, Indicator.name, Indicator.importance).join(
-        Indicator, IndicatorValue.indicator_id == Indicator.id
-    ).filter(IndicatorValue.enterprise_id == enterprise_id)
+    query = db.query(models.IndicatorValue, models.Indicator.name, models.Indicator.importance).join(
+        models.Indicator, models.IndicatorValue.indicator_id == models.Indicator.id
+    ).filter(models.IndicatorValue.enterprise_id == enterprise_id)
 
     if indicator_id:
-        query = query.filter(IndicatorValue.indicator_id == indicator_id)
+        query = query.filter(models.IndicatorValue.indicator_id == indicator_id)
     if from_date:
-        query = query.filter(IndicatorValue.value_date >= from_date)
+        query = query.filter(models.IndicatorValue.value_date >= from_date)
     if to_date:
-        query = query.filter(IndicatorValue.value_date <= to_date)
+        query = query.filter(models.IndicatorValue.value_date <= to_date)
 
     # Пагинация для обычного режима
     if not group_by and not aggregate:
@@ -357,10 +361,10 @@ def get_weighted_indicators(
     currencies = {item[0].currency_code for item in indicator_values}
 
     # Загружаем все курсы одним запросом
-    exchange_rates = db.query(ExchangeRate).filter(
-        ExchangeRate.from_currency.in_(currencies),
-        ExchangeRate.to_currency == target_currency,
-        ExchangeRate.rate_date.in_(dates)
+    exchange_rates = db.query(models.ExchangeRate).filter(
+        models.ExchangeRate.from_currency.in_(currencies),
+        models.ExchangeRate.to_currency == target_currency,
+        models.ExchangeRate.rate_date.in_(dates)
     ).all()
 
     # Словарь курсов для быстрого доступа
@@ -372,32 +376,32 @@ def get_weighted_indicators(
     if group_by:
         # Определяем выражение для группировки
         if group_by == "month":
-            period_expr = func.to_char(IndicatorValue.value_date, 'YYYY-MM')
+            period_expr = func.to_char(models.IndicatorValue.value_date, 'YYYY-MM')
         elif group_by == "quarter":
             period_expr = func.concat(
-                func.extract('year', IndicatorValue.value_date),
+                func.extract('year', models.IndicatorValue.value_date),
                 '-Q',
-                func.extract('quarter', IndicatorValue.value_date)
+                func.extract('quarter', models.IndicatorValue.value_date)
             )
 
         # Запрос для группировки
         grouped_query = db.query(
             period_expr.label('period'),
-            (IndicatorValue.value * Indicator.importance).label('weighted_value'),
-            IndicatorValue.currency_code,
-            IndicatorValue.value_date
+            (models.IndicatorValue.value * models.Indicator.importance).label('weighted_value'),
+            models.IndicatorValue.currency_code,
+            models.IndicatorValue.value_date
         ).join(
-            Indicator, IndicatorValue.indicator_id == Indicator.id
+            models.Indicator, models.IndicatorValue.indicator_id == models.Indicator.id
         ).filter(
-            IndicatorValue.enterprise_id == enterprise_id
+            models.IndicatorValue.enterprise_id == enterprise_id
         )
 
         if indicator_id:
-            grouped_query = grouped_query.filter(IndicatorValue.indicator_id == indicator_id)
+            grouped_query = grouped_query.filter(models.IndicatorValue.indicator_id == indicator_id)
         if from_date:
-            grouped_query = grouped_query.filter(IndicatorValue.value_date >= from_date)
+            grouped_query = grouped_query.filter(models.IndicatorValue.value_date >= from_date)
         if to_date:
-            grouped_query = grouped_query.filter(IndicatorValue.value_date <= to_date)
+            grouped_query = grouped_query.filter(models.IndicatorValue.value_date <= to_date)
 
         grouped_results = grouped_query.all()
 
@@ -426,7 +430,7 @@ def get_weighted_indicators(
         # Формируем результат
         result = []
         for period, data in grouped_dict.items():
-            result.append(WeightedIndicatorGroupSchema(
+            result.append(schemas.WeightedIndicatorGroupSchema(
                 period=period,
                 total_weighted_value=round(data["total_weighted_value"], 2) if not data["has_missing_rate"] else None,
                 warning="No exchange rate found for some values" if data["has_missing_rate"] else None
@@ -456,7 +460,7 @@ def get_weighted_indicators(
                 warning = f"No exchange rate found for some values"
                 break
 
-        return WeightedIndicatorAggregateSchema(
+        return schemas.WeightedIndicatorAggregateSchema(
             total_weighted_value=total_weighted_value,
             warning=warning
         )
