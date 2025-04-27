@@ -4,17 +4,17 @@ from sqlalchemy.orm import sessionmaker
 import os
 from dotenv import load_dotenv
 
-# ✅ Загрузка переменных окружения из .env
+# Загрузка переменных окружения
 load_dotenv()
 
-# ✅ Получение строки подключения без кавычек
+# Получение строки подключения
 DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
-    raise ValueError("DATABASE_URL is not set")
+    raise ValueError("DATABASE_URL is not set in .env file")
 
-# ✅ Подключение к базе
+# Подключение к базе
 engine = create_engine(DATABASE_URL)
-SessionLocal = sessionmaker(bind=engine)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 # Модели
@@ -22,7 +22,8 @@ class User(Base):
     __tablename__ = "users"
     id = Column(Integer, primary_key=True)
     username = Column(String, unique=True, index=True)
-    hashed_password = Column(String)
+    hashed_password = Column(String, nullable=False)  # Уточняем, что пароль обязателен
+    avatar_url = Column(String, nullable=True)  # Поле для URL аватарки
 
 class Enterprise(Base):
     __tablename__ = "enterprises"
@@ -51,7 +52,6 @@ class ExchangeRate(Base):
     to_currency = Column(String, ForeignKey("currencies.code"))
     rate = Column(Numeric)
     rate_date = Column(Date)
-
     __table_args__ = (
         UniqueConstraint("from_currency", "to_currency", "rate_date", name="uix_exchange_rate_date"),
     )
@@ -64,7 +64,6 @@ class IndicatorValue(Base):
     value_date = Column(Date)
     value = Column(Numeric)
     currency_code = Column(String, ForeignKey("currencies.code"))
-
     __table_args__ = (
         Index("ix_value_date", "value_date"),
         Index("ix_enterprise_id", "enterprise_id"),

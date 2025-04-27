@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status, UploadFile, File
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from typing import List, Dict
@@ -6,34 +6,46 @@ from datetime import timedelta, date
 from passlib.exc import UnknownHashError
 import models
 import schemas
-from dependencies import get_db, get_current_user, create_access_token, ACCESS_TOKEN_EXPIRE_MINUTES, pwd_context
+from dependencies import get_db, get_current_user, create_access_token, ACCESS_TOKEN_EXPIRE_MINUTES, pwd_context, create_refresh_token
 from sqlalchemy.sql import func
+import os
+import uuid
+from pathlib import Path
+import shutil
 
 router = APIRouter()
 
 @router.post("/register", response_model=schemas.TokenPair, tags=["auth"], summary="Register a new user")
 def register_user(user: schemas.UserCreateSchema, db: Session = Depends(get_db)):
+    # Проверяем, существует ли уже пользователь с таким username
     existing_user = db.query(models.User).filter(models.User.username == user.username).first()
     if existing_user:
         raise HTTPException(status_code=400, detail="Username already exists")
+    
+    # Хэшируем пароль
     hashed_password = pwd_context.hash(user.password)
+    
+    # Создаём нового пользователя
     db_user = models.User(username=user.username, hashed_password=hashed_password)
     db.add(db_user)
     db.commit()
+    db.refresh(db_user)
+    
+    # Генерируем токены
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
-        data={"sub": str(db_user.id)}, expires_delta=access_token_expires
+        data={"sub": str(db_user.id)},
+        expires_delta=access_token_expires
     )
-    from dependencies import create_refresh_token
-    refresh_token = create_refresh_token(data={"sub": str(user.id)})
+    refresh_token = create_refresh_token(data={"sub": str(db_user.id)})
+
     return {
         "access_token": access_token,
         "refresh_token": refresh_token,
         "token_type": "bearer"
     }
 
-
-@router.post("/token", response_model=schemas.TokenPair, tags=["auth"], summary="Login and get access token")
+@router.post("/token", response_model=schemas.TokenPair, tags=["auth"], summary="Вход и получение токена доступа")
 def login_for_access_token(
     form_data: OAuth2PasswordRequestForm = Depends(), 
     db: Session = Depends(get_db)
@@ -42,42 +54,108 @@ def login_for_access_token(
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Username does not exist",
+            detail="Имя пользователя не существует",
             headers={"WWW-Authenticate": "Bearer"},
         )
     try:
         if not pwd_context.verify(form_data.password, user.hashed_password):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Incorrect password",
+                detail="Неверный пароль",
                 headers={"WWW-Authenticate": "Bearer"},
             )
     except UnknownHashError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid password hash format in database",
+            detail="Неверный формат хеша пароля в базе данных",
             headers={"WWW-Authenticate": "Bearer"},
         )
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
         data={"sub": str(user.id)}, expires_delta=access_token_expires
     )
-    from dependencies import create_refresh_token
-    refresh_token = create_refresh_token(data={"sub": str(user.id)})
+    refresh_token = create_refresh_token(data={"sub": str(user.id)}) 
     return {
         "access_token": access_token,
         "refresh_token": refresh_token,
         "token_type": "bearer"
     }
 
-
-@router.post("/refresh", response_model=schemas.TokenPair, tags=["auth"], summary="Refresh access token")
+@router.post("/refresh", response_model=schemas.TokenRefreshResponse, tags=["auth"], summary="Refresh access token")
 def refresh_access_token(refresh_token: str = Query(...), db: Session = Depends(get_db)):
     from dependencies import verify_refresh_token, create_access_token
     user_id = verify_refresh_token(refresh_token)
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     new_access_token = create_access_token(data={"sub": str(user_id)}, expires_delta=access_token_expires)
     return {"access_token": new_access_token, "token_type": "bearer"}
+# -----------------------------------
+# Маршруты для пользователей
+# -----------------------------------
+
+@router.get("/users/me", response_model=schemas.UserSchema, tags=["users"], summary="Get current user")
+def read_current_user(current_user: models.User = Depends(get_current_user)):
+    return current_user
+
+@router.put("/users/me", response_model=schemas.UserSchema, tags=["users"], summary="Update current user profile")
+def update_current_user(
+    user_update: schemas.UserUpdateSchema,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    # Проверка уникальности username, если оно обновляется
+    if user_update.username and user_update.username != current_user.username:
+        existing_user = db.query(models.User).filter(models.User.username == user_update.username).first()
+        if existing_user:
+            raise HTTPException(status_code=400, detail="Username already exists")
+        current_user.username = user_update.username
+    
+    # Обновление avatar_url, если указано
+    if user_update.avatar_url is not None:
+        current_user.avatar_url = user_update.avatar_url
+    
+    db.commit()
+    db.refresh(current_user)
+    return current_user
+
+@router.post("/users/me/avatar", response_model=schemas.UserSchema, tags=["users"], summary="Upload user avatar")
+async def upload_user_avatar(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    # Проверка MIME-типа файла
+    allowed_types = ["image/jpeg", "image/png"]
+    if file.content_type not in allowed_types:
+        raise HTTPException(status_code=400, detail="Only JPEG or PNG images are allowed")
+    
+    # Проверка размера файла (например, не более 5 МБ)
+    max_size = 5 * 1024 * 1024  # 5 MB
+    content = await file.read()
+    if len(content) > max_size:
+        raise HTTPException(status_code=400, detail="File size exceeds 5 MB")
+    
+    # Создание директории для аватарок
+    upload_dir = Path("uploads/avatars")
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Генерация уникального имени файла
+    file_extension = file.filename.split(".")[-1].lower()
+    file_name = f"{uuid.uuid4()}.{file_extension}"
+    file_path = upload_dir / file_name
+    
+    # Сохранение файла
+    with file_path.open("wb") as buffer:
+        buffer.write(content)
+    
+    # Формирование URL
+    avatar_url = f"/uploads/avatars/{file_name}"
+    
+    # Обновление пользователя
+    current_user.avatar_url = avatar_url
+    db.commit()
+    db.refresh(current_user)
+    
+    return current_user
 
 # -----------------------------------
 # Маршруты для предприятий
@@ -239,7 +317,6 @@ def get_indicator_values(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user)
 ):
-    # Фильтрация значений показателей
     query = db.query(models.IndicatorValue)
     if enterprise_id:
         query = query.filter(models.IndicatorValue.enterprise_id == enterprise_id)
@@ -250,27 +327,22 @@ def get_indicator_values(
     if to_date:
         query = query.filter(models.IndicatorValue.value_date <= to_date)
     
-    # Пагинация
     query = query.offset(skip).limit(limit)
     indicator_values = query.all()
 
-    # Собираем даты и валюты для оптимизации запроса курсов
     dates = {item.value_date for item in indicator_values}
     currencies = {item.currency_code for item in indicator_values}
 
-    # Загружаем все курсы одним запросом
     exchange_rates = db.query(models.ExchangeRate).filter(
         models.ExchangeRate.from_currency.in_(currencies),
         models.ExchangeRate.to_currency == target_currency,
         models.ExchangeRate.rate_date.in_(dates)
     ).all()
 
-    # Словарь курсов для быстрого доступа
     rate_dict: Dict[tuple, float] = {
         (rate.from_currency, rate.rate_date): float(rate.rate) for rate in exchange_rates
     }
 
-    # Формируем ответ с конвертацией и предупреждениями
     result = []
     for item in indicator_values:
         item_dict = schemas.IndicatorValueSchema.from_orm(item).dict()
@@ -301,7 +373,6 @@ def create_indicator_value(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user)
 ):
-    # Проверка существования предприятия, показателя и валюты
     enterprise = db.query(models.Enterprise).get(indicator_value.enterprise_id)
     if not enterprise:
         raise HTTPException(status_code=400, detail="Предприятие не найдено")
@@ -361,7 +432,6 @@ def get_weighted_indicators(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user)
 ):
-    # Запрос с JOIN для получения имени и важности показателя
     query = db.query(models.IndicatorValue, models.Indicator.name, models.Indicator.importance).join(
         models.Indicator, models.IndicatorValue.indicator_id == models.Indicator.id
     ).filter(models.IndicatorValue.enterprise_id == enterprise_id)
@@ -373,30 +443,24 @@ def get_weighted_indicators(
     if to_date:
         query = query.filter(models.IndicatorValue.value_date <= to_date)
 
-    # Пагинация для обычного режима
     if not group_by and not aggregate:
         query = query.offset(skip).limit(limit)
     indicator_values = query.all()
 
-    # Собираем даты и валюты для оптимизации запроса курсов
     dates = {item[0].value_date for item in indicator_values}
     currencies = {item[0].currency_code for item in indicator_values}
 
-    # Загружаем все курсы одним запросом
     exchange_rates = db.query(models.ExchangeRate).filter(
         models.ExchangeRate.from_currency.in_(currencies),
         models.ExchangeRate.to_currency == target_currency,
         models.ExchangeRate.rate_date.in_(dates)
     ).all()
 
-    # Словарь курсов для быстрого доступа
     rate_dict: Dict[tuple, float] = {
         (rate.from_currency, rate.rate_date): float(rate.rate) for rate in exchange_rates
     }
 
-    # Если требуется группировка
     if group_by:
-        # Определяем выражение для группировки
         if group_by == "month":
             period_expr = func.to_char(models.IndicatorValue.value_date, 'YYYY-MM')
         elif group_by == "quarter":
@@ -406,7 +470,6 @@ def get_weighted_indicators(
                 func.extract('quarter', models.IndicatorValue.value_date)
             )
 
-        # Запрос для группировки
         grouped_query = db.query(
             period_expr.label('period'),
             (models.IndicatorValue.value * models.Indicator.importance).label('weighted_value'),
@@ -427,13 +490,11 @@ def get_weighted_indicators(
 
         grouped_results = grouped_query.all()
 
-        # Группируем вручную, чтобы учесть конвертацию валют
         grouped_dict = {}
         for period, weighted_value, currency_code, value_date in grouped_results:
             if period not in grouped_dict:
                 grouped_dict[period] = {"total_weighted_value": 0.0, "warning": None, "has_missing_rate": False}
             
-            # Конвертация в target_currency
             if currency_code == target_currency:
                 converted_value = float(weighted_value)
             else:
@@ -449,7 +510,6 @@ def get_weighted_indicators(
             else:
                 grouped_dict[period]["has_missing_rate"] = True
 
-        # Формируем результат
         result = []
         for period, data in grouped_dict.items():
             result.append(schemas.WeightedIndicatorGroupSchema(
@@ -457,10 +517,9 @@ def get_weighted_indicators(
                 total_weighted_value=round(data["total_weighted_value"], 2) if not data["has_missing_rate"] else None,
                 warning="No exchange rate found for some values" if data["has_missing_rate"] else None
             ))
-        result.sort(key=lambda x: x.period)  # Сортировка по периоду
+        result.sort(key=lambda x: x.period)
         return result
 
-    # Если требуется агрегация, вычисляем сумму взвешенных значений
     if aggregate:
         total_weighted_value = 0.0
         warning = None
@@ -487,7 +546,6 @@ def get_weighted_indicators(
             warning=warning
         )
 
-    # Формируем список взвешенных показателей
     result = []
     for item, indicator_name, importance in indicator_values:
         weighted_value = float(item.value) * float(importance)

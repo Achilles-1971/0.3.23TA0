@@ -175,3 +175,21 @@ class UserCreateSchema(BaseModel):
 
     class Config:
         extra = "forbid"
+
+# Схема для обновления профиля пользователя
+class UserUpdateSchema(BaseModel):
+    username: Optional[str] = None
+    avatar_url: Optional[str] = None
+
+    class Config:
+        extra = "forbid"
+
+# Схема для пользователя
+class UserSchema(BaseModel):
+    id: int
+    username: str
+    avatar_url: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+        extra = "forbid"
