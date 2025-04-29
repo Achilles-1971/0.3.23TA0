@@ -572,3 +572,54 @@ def get_weighted_indicators(
         result.append(item_dict)
 
     return result
+
+import requests
+from fastapi import APIRouter, Depends
+from sqlalchemy.orm import Session
+from datetime import date
+from dependencies import get_db
+import models
+
+@router.post("/update-exchange-rates/", tags=["exchange_rates"], summary="Обновить курсы валют с внешнего API")
+def update_exchange_rates(
+    target_date: date = date.today(),
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    url = f"https://api.exchangerate.host/{target_date.isoformat()}?base=RUB&symbols=USD,EUR"
+    response = requests.get(url)
+
+    if not response.ok:
+        return {"detail": "Ошибка при получении данных с API"}
+
+    data = response.json()
+    rates = data.get("rates", {})
+
+    updated = 0
+    inserted = 0
+
+    for to_currency, rate in rates.items():
+        db_rate = db.query(models.ExchangeRate).filter_by(
+            from_currency="RUB",
+            to_currency=to_currency,
+            rate_date=target_date
+        ).first()
+
+        if db_rate:
+            if abs(db_rate.rate - rate) > 0.0001:  # допустимая разница
+                db_rate.rate = rate
+                updated += 1
+        else:
+            db_rate = models.ExchangeRate(
+                from_currency="RUB",
+                to_currency=to_currency,
+                rate=rate,
+                rate_date=target_date
+            )
+            db.add(db_rate)
+            inserted += 1
+
+    db.commit()
+    return {
+        "detail": f"Добавлено новых: {inserted}, обновлено существующих: {updated} на дату {target_date}"
+    }
