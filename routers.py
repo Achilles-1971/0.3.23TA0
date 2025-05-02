@@ -123,38 +123,43 @@ async def upload_user_avatar(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
+    import cloudinary
+    import cloudinary.uploader
+    from dotenv import load_dotenv
+    import os
+
+    load_dotenv()
+
     # Проверка MIME-типа файла
     allowed_types = ["image/jpeg", "image/png"]
     if file.content_type not in allowed_types:
         raise HTTPException(status_code=400, detail="Only JPEG or PNG images are allowed")
-    
-    # Проверка размера файла (например, не более 5 МБ)
+
+    # Проверка размера файла (до 5 МБ)
     max_size = 5 * 1024 * 1024  # 5 MB
     content = await file.read()
     if len(content) > max_size:
         raise HTTPException(status_code=400, detail="File size exceeds 5 MB")
-    
-    # Создание директории для аватарок
-    upload_dir = Path("uploads/avatars")
-    upload_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Генерация уникального имени файла
-    file_extension = file.filename.split(".")[-1].lower()
-    file_name = f"{uuid.uuid4()}.{file_extension}"
-    file_path = upload_dir / file_name
-    
-    # Сохранение файла
-    with file_path.open("wb") as buffer:
-        buffer.write(content)
-    
-    # Формирование URL
-    avatar_url = f"/uploads/avatars/{file_name}"
-    
-    # Обновление пользователя
-    current_user.avatar_url = avatar_url
+
+    # Cloudinary config
+    cloudinary.config(
+        cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME"),
+        api_key=os.getenv("CLOUDINARY_API_KEY"),
+        api_secret=os.getenv("CLOUDINARY_API_SECRET")
+    )
+
+    # Загрузка в Cloudinary (из памяти)
+    result = cloudinary.uploader.upload(
+        content,
+        folder="avatars",
+        resource_type="image"
+    )
+
+    # Сохранение URL в базу
+    current_user.avatar_url = result["secure_url"]
     db.commit()
     db.refresh(current_user)
-    
+
     return current_user
 
 # -----------------------------------
@@ -594,32 +599,63 @@ def update_exchange_rates(
 
     data = response.json()
     rates = data.get("rates", {})
-
     updated = 0
     inserted = 0
 
+    # Сохраняем RUB → USD и RUB → EUR + обратные USD → RUB, EUR → RUB
     for to_currency, rate in rates.items():
-        db_rate = db.query(models.ExchangeRate).filter_by(
-            from_currency="RUB",
-            to_currency=to_currency,
-            rate_date=target_date
-        ).first()
+        for from_currency, actual_rate in [
+            ("RUB", rate),
+            (to_currency, round(1 / rate, 6))  # обратный
+        ]:
+            target_currency = to_currency if from_currency == "RUB" else "RUB"
 
-        if db_rate:
-            if abs(db_rate.rate - rate) > 0.0001:  # допустимая разница
-                db_rate.rate = rate
-                updated += 1
-        else:
-            db_rate = models.ExchangeRate(
-                from_currency="RUB",
-                to_currency=to_currency,
-                rate=rate,
+            db_rate = db.query(models.ExchangeRate).filter_by(
+                from_currency=from_currency,
+                to_currency=target_currency,
                 rate_date=target_date
-            )
-            db.add(db_rate)
-            inserted += 1
+            ).first()
+
+            if db_rate:
+                if abs(db_rate.rate - actual_rate) > 0.0001:
+                    db_rate.rate = actual_rate
+                    updated += 1
+            else:
+                db.add(models.ExchangeRate(
+                    from_currency=from_currency,
+                    to_currency=target_currency,
+                    rate=actual_rate,
+                    rate_date=target_date
+                ))
+                inserted += 1
+
+    # USD ↔ EUR (через RUB)
+    if "USD" in rates and "EUR" in rates:
+        usd_to_eur = round(rates["EUR"] / rates["USD"], 6)
+        eur_to_usd = round(rates["USD"] / rates["EUR"], 6)
+
+        for pair in [("USD", "EUR", usd_to_eur), ("EUR", "USD", eur_to_usd)]:
+            from_c, to_c, rate_val = pair
+            db_rate = db.query(models.ExchangeRate).filter_by(
+                from_currency=from_c,
+                to_currency=to_c,
+                rate_date=target_date
+            ).first()
+
+            if db_rate:
+                if abs(db_rate.rate - rate_val) > 0.0001:
+                    db_rate.rate = rate_val
+                    updated += 1
+            else:
+                db.add(models.ExchangeRate(
+                    from_currency=from_c,
+                    to_currency=to_c,
+                    rate=rate_val,
+                    rate_date=target_date
+                ))
+                inserted += 1
 
     db.commit()
     return {
-        "detail": f"Добавлено новых: {inserted}, обновлено существующих: {updated} на дату {target_date}"
+        "detail": f"Добавлено новых: {inserted}, обновлено: {updated} на дату {target_date}"
     }
