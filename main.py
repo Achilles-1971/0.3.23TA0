@@ -98,7 +98,6 @@ def update_missing_exchange_rates_for_indicator_values():
             if exists:
                 continue
 
-            # Загружаем курс для конкретной даты
             url = f"https://api.exchangerate.host/{date.isoformat()}?base={currency}&symbols={base_currency}"
             response = requests.get(url)
             if not response.ok:

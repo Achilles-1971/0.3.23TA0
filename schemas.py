@@ -2,7 +2,6 @@ from pydantic import BaseModel, Field, validator
 from typing import Optional, List
 from datetime import date
 
-# Схема для предприятия
 class EnterpriseSchema(BaseModel):
     id: int
     name: str
@@ -23,7 +22,6 @@ class EnterpriseCreateSchema(BaseModel):
     class Config:
         extra = "forbid"
 
-# Схема для показателя
 class IndicatorSchema(BaseModel):
     id: int
     name: str
@@ -42,7 +40,6 @@ class IndicatorCreateSchema(BaseModel):
     class Config:
         extra = "forbid"
 
-# Схема для валюты
 class CurrencySchema(BaseModel):
     code: str
     name: str
@@ -58,7 +55,6 @@ class CurrencyCreateSchema(BaseModel):
     class Config:
         extra = "forbid"
 
-# Схема для курса валют
 class ExchangeRateSchema(BaseModel):
     id: int
     from_currency: str
@@ -85,7 +81,6 @@ class ExchangeRateCreateSchema(BaseModel):
             raise ValueError("from_currency and to_currency must be different")
         return v
 
-# Схема для значения показателя
 class IndicatorValueSchema(BaseModel):
     id: int
     enterprise_id: int
@@ -110,7 +105,6 @@ class IndicatorValueCreateSchema(BaseModel):
     class Config:
         extra = "forbid"
 
-# Схема для взвешенного показателя
 class WeightedIndicatorSchema(BaseModel):
     indicator_id: int
     indicator_name: str
@@ -126,7 +120,6 @@ class WeightedIndicatorSchema(BaseModel):
         from_attributes = True
         extra = "forbid"
 
-# Схема для агрегации взвешенных показателей
 class WeightedIndicatorAggregateSchema(BaseModel):
     total_weighted_value: Optional[float] = None
     warning: Optional[str] = None
@@ -134,7 +127,6 @@ class WeightedIndicatorAggregateSchema(BaseModel):
     class Config:
         extra = "forbid"
 
-# Схема для группировки взвешенных показателей по периодам
 class WeightedIndicatorGroupSchema(BaseModel):
     period: str
     total_weighted_value: Optional[float] = None
@@ -143,7 +135,6 @@ class WeightedIndicatorGroupSchema(BaseModel):
     class Config:
         extra = "forbid"
 
-# Схема для токена (одиночный access token)
 class Token(BaseModel):
     access_token: str
     token_type: str
@@ -151,7 +142,6 @@ class Token(BaseModel):
     class Config:
         extra = "forbid"
 
-# Схема для пары access + refresh токенов
 class TokenPair(BaseModel):
     access_token: str
     refresh_token: str
@@ -160,7 +150,6 @@ class TokenPair(BaseModel):
     class Config:
         extra = "forbid"
 
-# Схема для обновления токена
 class TokenRefreshResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
@@ -168,7 +157,6 @@ class TokenRefreshResponse(BaseModel):
     class Config:
         extra = "forbid"
 
-# Схема для регистрации пользователя
 class UserCreateSchema(BaseModel):
     username: str
     password: str = Field(..., min_length=8)
@@ -176,7 +164,6 @@ class UserCreateSchema(BaseModel):
     class Config:
         extra = "forbid"
 
-# Схема для обновления профиля пользователя
 class UserUpdateSchema(BaseModel):
     username: Optional[str] = None
     avatar_url: Optional[str] = None
@@ -184,7 +171,6 @@ class UserUpdateSchema(BaseModel):
     class Config:
         extra = "forbid"
 
-# Схема для пользователя
 class UserSchema(BaseModel):
     id: int
     username: str

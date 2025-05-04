@@ -453,9 +453,7 @@ def delete_indicator_value(id: int, db: Session = Depends(get_db), current_user=
     db.commit()
     return {"detail": "Indicator value deleted"}
 
-# -----------------------------------
-# Маршруты для взвешенных показателей
-# -----------------------------------
+
 
 @router.get("/weighted-indicators/", 
             response_model=List[schemas.WeightedIndicatorSchema] | schemas.WeightedIndicatorAggregateSchema | List[schemas.WeightedIndicatorGroupSchema], 

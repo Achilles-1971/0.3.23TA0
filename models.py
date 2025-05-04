@@ -5,26 +5,22 @@ import os
 from dotenv import load_dotenv
 from sqlalchemy.orm import relationship
 
-# Загрузка переменных окружения
 load_dotenv()
 
-# Получение строки подключения
 DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     raise ValueError("DATABASE_URL is not set in .env file")
 
-# Подключение к базе
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
-# Модели
 class User(Base):
     __tablename__ = "users"
     id = Column(Integer, primary_key=True)
     username = Column(String, unique=True, index=True)
-    hashed_password = Column(String, nullable=False)  # Уточняем, что пароль обязателен
-    avatar_url = Column(String, nullable=True)  # Поле для URL аватарки
+    hashed_password = Column(String, nullable=False)  
+    avatar_url = Column(String, nullable=True)  
 
 class Enterprise(Base):
     __tablename__ = "enterprises"
