@@ -3,6 +3,7 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 import os
 from dotenv import load_dotenv
+from sqlalchemy.orm import relationship
 
 # Загрузка переменных окружения
 load_dotenv()
@@ -33,12 +34,18 @@ class Enterprise(Base):
     phone = Column(String)
     contact_person = Column(String)
 
+    indicator_values = relationship("IndicatorValue", back_populates="enterprise")
+
+
 class Indicator(Base):
     __tablename__ = "indicators"
     id = Column(Integer, primary_key=True)
     name = Column(String)
     importance = Column(Numeric)
     unit = Column(String)
+
+    indicator_values = relationship("IndicatorValue", back_populates="indicator")
+
 
 class Currency(Base):
     __tablename__ = "currencies"
@@ -64,8 +71,12 @@ class IndicatorValue(Base):
     value_date = Column(Date)
     value = Column(Numeric)
     currency_code = Column(String, ForeignKey("currencies.code"))
+
     __table_args__ = (
         Index("ix_value_date", "value_date"),
         Index("ix_enterprise_id", "enterprise_id"),
         Index("ix_indicator_id", "indicator_id"),
     )
+
+    indicator = relationship("Indicator", back_populates="indicator_values")
+    enterprise = relationship("Enterprise", back_populates="indicator_values")

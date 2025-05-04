@@ -193,3 +193,17 @@ class UserSchema(BaseModel):
     class Config:
         from_attributes = True
         extra = "forbid"
+
+class IndicatorValueWithObjects(BaseModel):
+    id: int
+    value: float
+    value_date: date
+    indicator: Optional[IndicatorSchema] = None
+    enterprise: Optional[EnterpriseSchema] = None
+    currency_code: str
+    converted_value: Optional[float] = None
+    warning: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+        extra = "forbid"

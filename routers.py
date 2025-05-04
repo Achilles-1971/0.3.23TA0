@@ -12,7 +12,11 @@ import os
 import uuid
 from pathlib import Path
 import shutil
-
+from fastapi import Query, Depends
+from sqlalchemy.orm import selectinload, joinedload
+from sqlalchemy.orm import Session
+from typing import List, Dict, Optional
+from datetime import date
 router = APIRouter()
 
 @router.post("/register", response_model=schemas.TokenPair, tags=["auth"], summary="Register a new user")
@@ -306,32 +310,44 @@ def delete_exchange_rate(id: int, db: Session = Depends(get_db), current_user=De
     db.commit()
     return {"detail": "Exchange rate deleted"}
 
-# -----------------------------------
-# Маршруты для значений показателей
-# -----------------------------------
-
-@router.get("/indicator-values/", response_model=List[schemas.IndicatorValueSchema], tags=["indicator_values"], summary="Get indicator values with optional filters")
+@router.get(
+    "/indicator-values/",
+    response_model=List[schemas.IndicatorValueWithObjects],
+    tags=["indicator_values"],
+    summary="Get indicator values with optional filters"
+)
 def get_indicator_values(
     enterprise_id: int = Query(None),
     indicator_id: int = Query(None),
     from_date: date = Query(None),
     to_date: date = Query(None),
     target_currency: str = Query("RUB"),
+    currency_code: str = Query(None),
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=1000),
+    enterprise_name: Optional[str] = Query(None),
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user)
-):
-    query = db.query(models.IndicatorValue)
-    if enterprise_id:
+) -> List[schemas.IndicatorValueWithObjects]:
+    query = db.query(models.IndicatorValue).options(
+        selectinload(models.IndicatorValue.enterprise),
+        selectinload(models.IndicatorValue.indicator)
+    )
+
+    if enterprise_name:
+        query = query.join(models.Enterprise).filter(models.Enterprise.name == enterprise_name)
+    elif enterprise_id:
         query = query.filter(models.IndicatorValue.enterprise_id == enterprise_id)
+
     if indicator_id:
         query = query.filter(models.IndicatorValue.indicator_id == indicator_id)
     if from_date:
         query = query.filter(models.IndicatorValue.value_date >= from_date)
     if to_date:
         query = query.filter(models.IndicatorValue.value_date <= to_date)
-    
+    if currency_code:
+        query = query.filter(models.IndicatorValue.currency_code == currency_code)
+
     query = query.offset(skip).limit(limit)
     indicator_values = query.all()
 
@@ -345,24 +361,32 @@ def get_indicator_values(
     ).all()
 
     rate_dict: Dict[tuple, float] = {
-        (rate.from_currency, rate.rate_date): float(rate.rate) for rate in exchange_rates
+        (rate.from_currency, rate.rate_date): float(rate.rate)
+        for rate in exchange_rates
     }
 
     result = []
     for item in indicator_values:
-        item_dict = schemas.IndicatorValueSchema.from_orm(item).dict()
+        if not item.enterprise or not item.indicator:
+            continue
+
+        base = schemas.IndicatorValueWithObjects.from_orm(item).dict()
+
         if item.currency_code == target_currency:
-            item_dict["converted_value"] = float(item.value)
-            item_dict["warning"] = None
+            base["converted_value"] = float(item.value)
+            base["warning"] = None
         else:
             rate_key = (item.currency_code, item.value_date)
             if rate_key in rate_dict:
-                item_dict["converted_value"] = round(float(item.value) * rate_dict[rate_key], 2)
-                item_dict["warning"] = None
+                base["converted_value"] = round(float(item.value) * rate_dict[rate_key], 2)
+                base["warning"] = None
             else:
-                item_dict["converted_value"] = None
-                item_dict["warning"] = f"No exchange rate found for {item.currency_code} to {target_currency} on {item.value_date}"
-        result.append(item_dict)
+                base["converted_value"] = None
+                base["warning"] = (
+                    f"No exchange rate found for {item.currency_code} to {target_currency} on {item.value_date}"
+                )
+
+        result.append(schemas.IndicatorValueWithObjects(**base))
 
     return result
 
@@ -390,11 +414,24 @@ def create_indicator_value(
     if not currency:
         raise HTTPException(status_code=400, detail="Валюта не найдена")
 
+    # Проверка на дубликат
+    existing = db.query(models.IndicatorValue).filter_by(
+        enterprise_id=indicator_value.enterprise_id,
+        indicator_id=indicator_value.indicator_id,
+        value_date=indicator_value.value_date,
+        value=indicator_value.value,
+        currency_code=indicator_value.currency_code
+    ).first()
+
+    if existing:
+        raise HTTPException(status_code=409, detail="Такое значение уже существует")
+
     db_value = models.IndicatorValue(**indicator_value.dict())
     db.add(db_value)
     db.commit()
     db.refresh(db_value)
     return db_value
+
 
 @router.put("/indicator-values/{id}", response_model=schemas.IndicatorValueSchema, tags=["indicator_values"], summary="Update an indicator value")
 def update_indicator_value(id: int, indicator_value: schemas.IndicatorValueCreateSchema, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
@@ -579,83 +616,116 @@ def get_weighted_indicators(
     return result
 
 import requests
-from fastapi import APIRouter, Depends
-from sqlalchemy.orm import Session
-from datetime import date
-from dependencies import get_db
-import models
+import time
+
 
 @router.post("/update-exchange-rates/", tags=["exchange_rates"], summary="Обновить курсы валют с внешнего API")
 def update_exchange_rates(
-    target_date: date = date.today(),
+    target_date: date = Query(None),
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
-    url = f"https://api.exchangerate.host/{target_date.isoformat()}?base=RUB&symbols=USD,EUR"
-    response = requests.get(url)
+    if target_date is None:
+        dates = db.query(models.IndicatorValue.value_date).distinct().all()
+        dates = [d[0] for d in dates if d[0] is not None]
+    else:
+        dates = [target_date]
 
-    if not response.ok:
-        return {"detail": "Ошибка при получении данных с API"}
-
-    data = response.json()
-    rates = data.get("rates", {})
+    currencies = ["USD", "EUR", "RUB"]
     updated = 0
     inserted = 0
+    failed_dates = []
 
-    # Сохраняем RUB → USD и RUB → EUR + обратные USD → RUB, EUR → RUB
-    for to_currency, rate in rates.items():
-        for from_currency, actual_rate in [
-            ("RUB", rate),
-            (to_currency, round(1 / rate, 6))  # обратный
-        ]:
-            target_currency = to_currency if from_currency == "RUB" else "RUB"
+    for date in dates:
+        existing_rates = db.query(models.ExchangeRate).filter_by(rate_date=date).all()
+        if existing_rates:
+            existing_pairs = {(r.from_currency, r.to_currency) for r in existing_rates}
+            required_pairs = {("RUB", "USD"), ("RUB", "EUR"), ("USD", "RUB"), ("EUR", "RUB"), ("USD", "EUR"), ("EUR", "USD")}
+            if existing_pairs.issuperset(required_pairs):
+                print(f"[Update Exchange Rates] Курсы для {date} уже существуют, пропускаем")
+                continue
 
-            db_rate = db.query(models.ExchangeRate).filter_by(
-                from_currency=from_currency,
-                to_currency=target_currency,
-                rate_date=target_date
-            ).first()
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                url = f"https://api.exchangerate.host/{date.isoformat()}?base=RUB&symbols=USD,EUR"
+                response = requests.get(url, timeout=5)
+                if response.ok:
+                    break
+                else:
+                    print(f"[Update Exchange Rates] Не удалось загрузить курсы для {date}, попытка {attempt + 1}/{max_retries}")
+                    time.sleep(1)
+            except requests.RequestException as e:
+                print(f"[Update Exchange Rates] Ошибка запроса для {date}: {str(e)}, попытка {attempt + 1}/{max_retries}")
+                time.sleep(1)
+        else:
+            print(f"[Update Exchange Rates] ❌ Не удалось загрузить курсы для {date} после {max_retries} попыток")
+            failed_dates.append(date)
+            continue
 
-            if db_rate:
-                if abs(db_rate.rate - actual_rate) > 0.0001:
-                    db_rate.rate = actual_rate
-                    updated += 1
-            else:
-                db.add(models.ExchangeRate(
+        data = response.json()
+        rates = data.get("rates", {})
+
+        for to_currency, rate in rates.items():
+            for from_currency, actual_rate in [
+                ("RUB", rate),
+                (to_currency, round(1 / rate, 6))
+            ]:
+                target_currency = to_currency if from_currency == "RUB" else "RUB"
+
+                db_rate = db.query(models.ExchangeRate).filter_by(
                     from_currency=from_currency,
                     to_currency=target_currency,
-                    rate=actual_rate,
-                    rate_date=target_date
-                ))
-                inserted += 1
+                    rate_date=date
+                ).first()
 
-    # USD ↔ EUR (через RUB)
-    if "USD" in rates and "EUR" in rates:
-        usd_to_eur = round(rates["EUR"] / rates["USD"], 6)
-        eur_to_usd = round(rates["USD"] / rates["EUR"], 6)
+                if db_rate:
+                    if abs(db_rate.rate - actual_rate) > 0.0001:
+                        db_rate.rate = actual_rate
+                        db.commit()
+                        updated += 1
+                else:
+                    new_rate = models.ExchangeRate(
+                        from_currency=from_currency,
+                        to_currency=target_currency,
+                        rate=actual_rate,
+                        rate_date=date
+                    )
+                    db.add(new_rate)
+                    db.commit()
+                    inserted += 1
 
-        for pair in [("USD", "EUR", usd_to_eur), ("EUR", "USD", eur_to_usd)]:
-            from_c, to_c, rate_val = pair
-            db_rate = db.query(models.ExchangeRate).filter_by(
-                from_currency=from_c,
-                to_currency=to_c,
-                rate_date=target_date
-            ).first()
+        if "USD" in rates and "EUR" in rates:
+            usd_to_eur = round(rates["EUR"] / rates["USD"], 6)
+            eur_to_usd = round(rates["USD"] / rates["EUR"], 6)
 
-            if db_rate:
-                if abs(db_rate.rate - rate_val) > 0.0001:
-                    db_rate.rate = rate_val
-                    updated += 1
-            else:
-                db.add(models.ExchangeRate(
+            for pair in [("USD", "EUR", usd_to_eur), ("EUR", "USD", eur_to_usd)]:
+                from_c, to_c, rate_val = pair
+                db_rate = db.query(models.ExchangeRate).filter_by(
                     from_currency=from_c,
                     to_currency=to_c,
-                    rate=rate_val,
-                    rate_date=target_date
-                ))
-                inserted += 1
+                    rate_date=date
+                ).first()
 
-    db.commit()
+                if db_rate:
+                    if abs(db_rate.rate - rate_val) > 0.0001:
+                        db_rate.rate = rate_val
+                        db.commit()
+                        updated += 1
+                else:
+                    new_rate = models.ExchangeRate(
+                        from_currency=from_c,
+                        to_currency=to_c,
+                        rate=rate_val,
+                        rate_date=date
+                    )
+                    db.add(new_rate)
+                    db.commit()
+                    inserted += 1
+
+    if failed_dates:
+        print(f"[Update Exchange Rates] Не удалось загрузить курсы для дат: {failed_dates}")
     return {
-        "detail": f"Добавлено новых: {inserted}, обновлено: {updated} на дату {target_date}"
+        "detail": f"Добавлено новых: {inserted}, обновлено: {updated} для {len(dates)} дат",
+        "failed_dates": failed_dates
     }
